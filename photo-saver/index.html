@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Saver</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:light dark;
+  --bg:light-dark(#f6f7f9,#14161a);--card:light-dark(#ffffff,#1d2026);--ink:light-dark(#16181c,#eceef2);
+  --mute:light-dark(#5d6470,#9aa1ad);--line:light-dark(#dde1e7,#2c3038);--accent:#1a73e8;--ok:#188038;--bad:#c5221f}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 "Libre Franklin",system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:clamp(24px,5vw,56px) 18px}
+h1{font-size:clamp(30px,5vw,42px);line-height:1.05;margin:0 0 6px;font-weight:800}
+.sub{color:var(--mute);margin:0 0 28px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:18px}
+.card h2{font-size:18px;margin:0 0 12px}
+label{display:block;font-weight:600;margin-bottom:6px}
+input[type=text],input[type=number]{width:100%;font:16px "Libre Franklin",sans-serif;padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:transparent;color:var(--ink)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:600 16px "Libre Franklin",sans-serif;min-height:46px;padding:0 20px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.45;cursor:default}
+button:focus-visible,input:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:2px}
+.hint{color:var(--mute);font-size:14px;margin:8px 0 0}
+#status{font-weight:600}
+ul#log{list-style:none;margin:14px 0 0;padding:0}
+#log li{display:grid;grid-template-columns:1fr auto;gap:4px 12px;padding:10px 0;border-top:1px solid var(--line);font-size:15px}
+#log .name{overflow-wrap:anywhere}
+#log .size{white-space:nowrap;color:var(--mute);text-align:right}
+#log .note{grid-column:1/-1;color:var(--mute);font-size:14px}
+#log .ok{color:var(--ok)}#log .bad{color:var(--bad)}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Photo Saver</h1>
+  <p class="sub">Pick photos from Google Photos and save them to your Downloads folder, each one kept under the size limit.</p>
+
+  <section class="card" id="setupCard">
+    <h2>One-time setup</h2>
+    <label for="clientId">Google OAuth client ID</label>
+    <input type="text" id="clientId" placeholder="1234567890-abc123.apps.googleusercontent.com" autocomplete="off" spellcheck="false">
+    <p class="hint">Paste the client ID from your Google Cloud project. Its Authorized JavaScript origin must be <b>https://danbarber81-hub.github.io</b>. The ID is saved in this browser only.</p>
+    <div class="row" style="margin-top:12px"><button id="saveId" class="primary">Save client ID</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Save photos</h2>
+    <div class="row" style="margin-bottom:14px">
+      <div style="flex:1 1 180px">
+        <label for="maxMb">Maximum size per photo (MB)</label>
+        <input type="number" id="maxMb" value="3.8" min="0.2" max="50" step="0.1">
+      </div>
+    </div>
+    <div class="row">
+      <button id="signIn" class="primary">1. Sign in with Google</button>
+      <button id="pick" disabled>2. Choose from Google Photos</button>
+      <button id="changeId" class="hidden">Change client ID</button>
+    </div>
+    <p class="hint">Photos already under the limit are saved untouched. Larger ones (and HEIC photos) are saved as JPG, shrunk only as much as needed. Videos are skipped.</p>
+    <p id="status" aria-live="polite"></p>
+    <ul id="log"></ul>
+  </section>
+</main>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script>
+{
+const SCOPE = 'https://www.googleapis.com/auth/photospicker.mediaitems.readonly';
+const API = 'https://photospicker.googleapis.com/v1';
+const $ = id => document.getElementById(id);
+let token = null, tokenExpires = 0, tokenClient = null;
+
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch { return null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch {} }
+};
+
+function setStatus(t, cls){ const s=$('status'); s.textContent=t; s.className=cls||''; }
+function mb(n){ return (n/1e6).toFixed(2)+' MB'; }
+function addLog(name, size, note, cls){
+  const li=document.createElement('li');
+  li.innerHTML='<span class="name"></span><span class="size"></span><span class="note"></span>';
+  li.querySelector('.name').textContent=name;
+  li.querySelector('.size').textContent=size||'';
+  const n=li.querySelector('.note'); n.textContent=note||''; if(cls) n.classList.add(cls);
+  $('log').prepend(li);
+}
+
+function showSetup(show){
+  $('setupCard').classList.toggle('hidden', !show);
+  $('changeId').classList.toggle('hidden', show);
+}
+const savedId = store.get('photoSaverClientId');
+if (savedId){ $('clientId').value = savedId; showSetup(false); }
+const savedMax = store.get('photoSaverMaxMb'); if (savedMax) $('maxMb').value = savedMax;
+$('maxMb').addEventListener('change', () => store.set('photoSaverMaxMb', $('maxMb').value));
+
+$('saveId').addEventListener('click', () => {
+  const v = $('clientId').value.trim();
+  if (!/\.apps\.googleusercontent\.com$/.test(v)) { setStatus('That doesn\'t look like a client ID. It should end in .apps.googleusercontent.com', 'bad'); return; }
+  store.set('photoSaverClientId', v); tokenClient = null; showSetup(false); setStatus('Client ID saved. Now sign in.');
+});
+$('changeId').addEventListener('click', () => showSetup(true));
+
+function haveToken(){ return token && Date.now() < tokenExpires - 60000; }
+
+$('signIn').addEventListener('click', () => {
+  const id = store.get('photoSaverClientId') || $('clientId').value.trim();
+  if (!id) { setStatus('Add your client ID first.', 'bad'); showSetup(true); return; }
+  if (!window.google?.accounts?.oauth2) { setStatus('Google sign-in is still loading. Try again in a moment.'); return; }
+  if (!tokenClient) {
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: id, scope: SCOPE,
+      callback: r => {
+        if (r.error) { setStatus('Sign-in failed: ' + r.error, 'bad'); return; }
+        token = r.access_token; tokenExpires = Date.now() + (Number(r.expires_in)||3600)*1000;
+        $('pick').disabled = false; $('pick').classList.add('primary');
+        setStatus('Signed in. Choose your photos.');
+      },
+      error_callback: e => setStatus('Sign-in window closed or blocked (' + (e.type||'error') + ').', 'bad')
+    });
+  }
+  tokenClient.requestAccessToken({ prompt: haveToken() ? '' : 'consent' });
+});
+
+async function api(path, opts={}){
+  const r = await fetch(API + path, { ...opts, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', ...(opts.headers||{}) } });
+  if (!r.ok) throw new Error('Google Photos API ' + r.status + ': ' + (await r.text()).slice(0,200));
+  return r.status === 204 ? {} : r.json();
+}
+const secs = s => parseFloat(String(s||'').replace('s','')) || 0;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+$('pick').addEventListener('click', async () => {
+  if (!haveToken()) { setStatus('Your sign-in expired. Sign in again.', 'bad'); $('pick').disabled = true; return; }
+  const win = window.open('about:blank', 'gphotosPicker', 'width=1000,height=760');
+  if (!win) { setStatus('Chrome blocked the Google Photos window. Allow pop-ups for this page and try again.', 'bad'); return; }
+  $('pick').disabled = true;
+  let session;
+  try {
+    session = await api('/sessions', { method: 'POST', body: '{}' });
+    win.location.href = session.pickerUri.replace(/\/$/, '') + '/autoclose';
+    setStatus('Pick your photos in the Google Photos window, then click Done.');
+    const interval = Math.max(secs(session.pollingConfig?.pollInterval), 2) * 1000;
+    const deadline = Date.now() + (secs(session.pollingConfig?.timeoutIn) || 1800) * 1000;
+    while (true) {
+      await sleep(interval);
+      const s = await api('/sessions/' + session.id);
+      if (s.mediaItemsSet) break;
+      if (Date.now() > deadline) throw new Error('The picking session timed out. Try again.');
+      if (win.closed) { await sleep(1500); const s2 = await api('/sessions/' + session.id); if (s2.mediaItemsSet) break; throw new Error('The Google Photos window was closed before anything was picked.'); }
+    }
+    const items = []; let pageToken = '';
+    do {
+      const q = '?sessionId=' + encodeURIComponent(session.id) + '&pageSize=100' + (pageToken ? '&pageToken=' + encodeURIComponent(pageToken) : '');
+      const res = await api('/mediaItems' + q);
+      items.push(...(res.mediaItems || [])); pageToken = res.nextPageToken || '';
+    } while (pageToken);
+    await processItems(items);
+  } catch (e) {
+    setStatus(e.message, 'bad');
+  } finally {
+    if (session) api('/sessions/' + session.id, { method: 'DELETE' }).catch(() => {});
+    $('pick').disabled = !haveToken();
+  }
+});
+
+async function getBytes(url){
+  let r;
+  try { r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } }); }
+  catch (e) { throw new Error('Chrome could not download the photo from Google (network or CORS block).'); }
+  if (!r.ok) throw new Error('Download failed (' + r.status + ')');
+  return r.blob();
+}
+
+async function encodeJpeg(bitmap, w, h, q){
+  const c = new OffscreenCanvas(w, h); const x = c.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, w, h);
+  x.imageSmoothingQuality = 'high'; x.drawImage(bitmap, 0, 0, w, h);
+  return c.convertToBlob({ type: 'image/jpeg', quality: q });
+}
+
+async function fitUnder(blob, maxBytes){
+  const bmp = await createImageBitmap(blob);
+  let w = bmp.width, h = bmp.height;
+  for (let pass = 0; pass < 10; pass++) {
+    const hiQ = await encodeJpeg(bmp, w, h, 0.92);
+    if (hiQ.size <= maxBytes) { bmp.close?.(); return { blob: hiQ, w, h, q: 0.92 }; }
+    const loQ = await encodeJpeg(bmp, w, h, 0.6);
+    if (loQ.size <= maxBytes) {
+      let lo = 0.6, hi = 0.92, best = loQ, bestQ = 0.6;
+      for (let i = 0; i < 6; i++) {
+        const mid = (lo + hi) / 2, b = await encodeJpeg(bmp, w, h, mid);
+        if (b.size <= maxBytes) { best = b; bestQ = mid; lo = mid; } else hi = mid;
+      }
+      bmp.close?.(); return { blob: best, w, h, q: bestQ };
+    }
+    const f = Math.min(0.9, Math.sqrt(maxBytes / loQ.size) * 0.97);
+    w = Math.max(1, Math.round(w * f)); h = Math.max(1, Math.round(h * f));
+  }
+  bmp.close?.(); throw new Error('Could not get this photo under the limit.');
+}
+
+function saveBlob(blob, name){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+const toJpgName = n => (n || 'photo').replace(/\.[^.]+$/, '') + '.jpg';
+
+async function processItems(items){
+  const maxBytes = Math.round(parseFloat($('maxMb').value || '3.8') * 1e6);
+  const photos = items.filter(i => (i.type || 'PHOTO') === 'PHOTO' && !(i.mediaFile?.mimeType || '').startsWith('video'));
+  const skipped = items.length - photos.length;
+  if (!photos.length) { setStatus(skipped ? 'Only videos were picked; nothing to save.' : 'No photos were picked.'); return; }
+  let done = 0, failed = 0;
+  for (const it of photos) {
+    const f = it.mediaFile || {}, name = f.filename || ('photo-' + it.id);
+    const meta = f.mediaFileMetadata || {};
+    setStatus('Saving ' + (done + failed + 1) + ' of ' + photos.length + ': ' + name);
+    try {
+      const heic = /hei[cf]/i.test(f.mimeType || '') || /\.hei[cf]$/i.test(name);
+      let src, out, note;
+      if (heic && meta.width && meta.height) {
+        src = await getBytes(f.baseUrl + '=w' + meta.width + '-h' + meta.height);
+        note = 'Converted from HEIC to JPG';
+      } else {
+        src = await getBytes(f.baseUrl + '=d');
+      }
+      if (!heic && src.size <= maxBytes) {
+        saveBlob(src, name); out = src; note = 'Saved as is (already under the limit)';
+      } else {
+        let r;
+        try { r = await fitUnder(src, maxBytes); }
+        catch (e) {
+          if (!meta.width || !meta.height) throw e;
+          // Format Chrome can't decode (e.g. RAW): ask Google for a full-size JPEG instead
+          r = await fitUnder(await getBytes(f.baseUrl + '=w' + meta.width + '-h' + meta.height), maxBytes);
+        }
+        out = r.blob; saveBlob(out, toJpgName(name));
+        const shrunk = meta.width && r.w < meta.width;
+        note = (note ? note + '. ' : '') + (src.size > maxBytes || shrunk ? 'Reduced from ' + mb(src.size) + ' to ' + r.w + '×' + r.h + ' px' : 'Saved as JPG');
+      }
+      addLog(heic || out !== src ? toJpgName(name) : name, mb(out.size), note, 'ok');
+      done++;
+    } catch (e) { addLog(name, '', e.message, 'bad'); failed++; }
+    await sleep(400);
+  }
+  setStatus('Done: ' + done + ' saved to Downloads' + (failed ? ', ' + failed + ' failed' : '') + (skipped ? ', ' + skipped + ' video(s) skipped' : '') + '.', failed ? 'bad' : 'ok');
+}
+}
+</script>
+</body>
+</html>
