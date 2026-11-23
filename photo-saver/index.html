@@ -59,6 +59,7 @@ ul#log{list-style:none;margin:14px 0 0;padding:0}
     <div class="row">
       <button id="signIn" class="primary">1. Sign in with Google</button>
       <button id="pick" disabled>2. Choose from Google Photos</button>
+      <button id="cancel" class="hidden">Cancel picking</button>
       <button id="changeId" class="hidden">Change client ID</button>
     </div>
     <p class="hint">Photos already under the limit are saved untouched. Larger ones (and HEIC photos) are saved as JPG, shrunk only as much as needed. Videos are skipped.</p>
@@ -73,7 +74,7 @@ ul#log{list-style:none;margin:14px 0 0;padding:0}
 const SCOPE = 'https://www.googleapis.com/auth/photospicker.mediaitems.readonly';
 const API = 'https://photospicker.googleapis.com/v1';
 const $ = id => document.getElementById(id);
-let token = null, tokenExpires = 0, tokenClient = null;
+let token = null, tokenExpires = 0, tokenClient = null, cancelled = false;
 
 const store = {
   get(k){ try { return localStorage.getItem(k); } catch { return null; } },
@@ -145,7 +146,8 @@ $('pick').addEventListener('click', async () => {
   try {
     session = await api('/sessions', { method: 'POST', body: '{}' });
     win.location.href = session.pickerUri.replace(/\/$/, '') + '/autoclose';
-    setStatus('Pick your photos in the Google Photos window, then click Done.');
+    setStatus('Pick your photos in the Google Photos window, then click Done. This page will continue on its own.');
+    cancelled = false; $('cancel').classList.remove('hidden');
     const interval = Math.max(secs(session.pollingConfig?.pollInterval), 2) * 1000;
     const deadline = Date.now() + (secs(session.pollingConfig?.timeoutIn) || 1800) * 1000;
     while (true) {
@@ -153,7 +155,7 @@ $('pick').addEventListener('click', async () => {
       const s = await api('/sessions/' + session.id);
       if (s.mediaItemsSet) break;
       if (Date.now() > deadline) throw new Error('The picking session timed out. Try again.');
-      if (win.closed) { await sleep(1500); const s2 = await api('/sessions/' + session.id); if (s2.mediaItemsSet) break; throw new Error('The Google Photos window was closed before anything was picked.'); }
+      if (cancelled) throw new Error('Picking cancelled.');
     }
     const items = []; let pageToken = '';
     do {
@@ -166,9 +168,11 @@ $('pick').addEventListener('click', async () => {
     setStatus(e.message, 'bad');
   } finally {
     if (session) api('/sessions/' + session.id, { method: 'DELETE' }).catch(() => {});
+    $('cancel').classList.add('hidden');
     $('pick').disabled = !haveToken();
   }
 });
+$('cancel').addEventListener('click', () => { cancelled = true; setStatus('Cancelling...'); });
 
 async function getBytes(url){
   let r;
