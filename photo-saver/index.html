@@ -109,6 +109,15 @@ $('saveId').addEventListener('click', () => {
 $('changeId').addEventListener('click', () => showSetup(true));
 
 function haveToken(){ return token && Date.now() < tokenExpires - 60000; }
+try {
+  const t = JSON.parse(sessionStorage.getItem('photoSaverToken') || localStorage.getItem('photoSaverToken') || 'null');
+  if (t && Date.now() < t.exp - 60000) { token = t.tok; tokenExpires = t.exp; }
+} catch {}
+function showSignedIn(){
+  $('pick').disabled = false; $('pick').classList.add('primary');
+  $('signIn').textContent = '1. Signed in \u2713'; $('signIn').classList.remove('primary');
+}
+if (haveToken()) { showSignedIn(); setStatus('Still signed in. Choose your photos.'); }
 
 $('signIn').addEventListener('click', () => {
   const id = store.get('photoSaverClientId') || $('clientId').value.trim();
@@ -120,13 +129,15 @@ $('signIn').addEventListener('click', () => {
       callback: r => {
         if (r.error) { setStatus('Sign-in failed: ' + r.error, 'bad'); return; }
         token = r.access_token; tokenExpires = Date.now() + (Number(r.expires_in)||3600)*1000;
-        $('pick').disabled = false; $('pick').classList.add('primary');
+        store.set('photoSaverToken', JSON.stringify({ tok: token, exp: tokenExpires }));
+        store.set('photoSaverSignedInBefore', '1');
+        showSignedIn();
         setStatus('Signed in. Choose your photos.');
       },
       error_callback: e => setStatus('Sign-in window closed or blocked (' + (e.type||'error') + ').', 'bad')
     });
   }
-  tokenClient.requestAccessToken({ prompt: haveToken() ? '' : 'consent' });
+  tokenClient.requestAccessToken({ prompt: store.get('photoSaverSignedInBefore') ? '' : 'consent' });
 });
 
 async function api(path, opts={}){
@@ -138,7 +149,7 @@ const secs = s => parseFloat(String(s||'').replace('s','')) || 0;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 $('pick').addEventListener('click', async () => {
-  if (!haveToken()) { setStatus('Your sign-in expired. Sign in again.', 'bad'); $('pick').disabled = true; return; }
+  if (!haveToken()) { setStatus('Your sign-in expired (Google limits it to an hour). Click Sign in; it takes one click.', 'bad'); $('pick').disabled = true; $('signIn').textContent = '1. Sign in with Google'; $('signIn').classList.add('primary'); return; }
   const win = window.open('about:blank', 'gphotosPicker', 'width=1000,height=760');
   if (!win) { setStatus('Chrome blocked the Google Photos window. Allow pop-ups for this page and try again.', 'bad'); return; }
   $('pick').disabled = true;
